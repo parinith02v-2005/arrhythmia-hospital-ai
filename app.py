@@ -9,36 +9,33 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
 import tempfile
 
-# -------- PAGE CONFIG -------- #
-st.set_page_config(page_title="Mindsparks AI Hospital", layout="wide")
+# ---------------- PAGE CONFIG ---------------- #
+st.set_page_config(page_title="Mindsparks Clinical ECG AI", layout="wide")
 
-# -------- PREMIUM UI (GLASS EFFECT 🔥) -------- #
+# ---------------- PREMIUM UI ---------------- #
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"] {
-    background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
+    background: linear-gradient(135deg,#0b1f2a,#133b5c);
 }
-.block-container {
-    padding-top: 2rem;
-}
-.glass {
-    background: rgba(255,255,255,0.08);
-    border-radius: 15px;
+.card {
+    background: rgba(255,255,255,0.05);
     padding: 20px;
-    backdrop-filter: blur(10px);
+    border-radius: 15px;
+    box-shadow: 0px 4px 20px rgba(0,0,0,0.3);
 }
 h1,h2,h3 {color:#00e6e6;}
 </style>
 """, unsafe_allow_html=True)
 
-# -------- LOAD LABELS -------- #
+# ---------------- LOAD LABELS ---------------- #
 try:
     with open("labels.json") as f:
         labels = json.load(f)
 except:
     labels = {"0":"Normal","1":"Atrial","2":"Ventricular","3":"Fusion","4":"Unknown"}
 
-# -------- MODEL -------- #
+# ---------------- MODEL ---------------- #
 class ECGModel(nn.Module):
     def __init__(self):
         super().__init__()
@@ -78,35 +75,33 @@ try:
     model.eval()
     model_loaded = True
 except Exception as e:
-    st.error(f"Model Error: {e}")
+    st.error(f"Model load error: {e}")
     model_loaded = False
 
-# -------- BPM (NO SCIPY) -------- #
+# ---------------- BPM ---------------- #
 def calculate_bpm(signal):
-    try:
-        threshold = np.mean(signal)
-        peaks = np.where(signal > threshold)[0]
-        if len(peaks) > 1:
-            rr = np.diff(peaks)
-            bpm = 60 / (np.mean(rr) / 360)
-            return int(bpm)
-        return 0
-    except:
-        return 0
+    threshold = np.mean(signal)
+    peaks = np.where(signal > threshold)[0]
+    if len(peaks) > 1:
+        rr = np.diff(peaks)
+        return int(60 / (np.mean(rr) / 360))
+    return 0
 
-# -------- GRAD CAM -------- #
+# ---------------- GRAD CAM ---------------- #
 def grad_cam(model, signal_tensor):
     signal_tensor.requires_grad = True
     output = model(signal_tensor)
     class_idx = output.argmax()
-
     output[0, class_idx].backward()
     gradients = signal_tensor.grad[0][0]
+    return gradients.abs().detach().numpy()
 
-    heatmap = gradients.abs().detach().numpy()
-    return heatmap
+# ---------------- HIGHLIGHT ---------------- #
+def highlight_abnormal(heatmap):
+    threshold = np.percentile(heatmap, 85)
+    return heatmap > threshold
 
-# -------- PDF GENERATION -------- #
+# ---------------- PDF ---------------- #
 def generate_pdf(name, age, diagnosis, bpm):
     file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     doc = SimpleDocTemplate(file.name)
@@ -122,29 +117,28 @@ def generate_pdf(name, age, diagnosis, bpm):
     doc.build(content)
     return file.name
 
-# -------- LOGIN -------- #
-st.sidebar.title("🏥 Secure Login")
+# ---------------- LOGIN ---------------- #
+st.sidebar.title("🏥 Doctor Login")
 user = st.sidebar.text_input("Doctor ID")
 password = st.sidebar.text_input("Password", type="password")
 
 if user and password:
 
-    st.title("🫀 Mindsparks AI ECG System")
+    st.title("🫀 Mindsparks Clinical ECG AI System")
 
     col1, col2 = st.columns([1,2])
 
     with col1:
-        st.markdown("### Patient Info")
+        st.markdown("### Patient Details")
         name = st.text_input("Name")
         age = st.number_input("Age", 1, 120)
         spo2 = st.slider("SpO2", 70, 100)
 
-        st.markdown("### Upload ECG")
-        file = st.file_uploader("CSV / PNG / JPG", type=["csv","png","jpg"])
+        file = st.file_uploader("Upload ECG", type=["csv","png","jpg"])
 
     if file and model_loaded:
 
-        # -------- MULTI-LEAD SUPPORT -------- #
+        # -------- LOAD SIGNAL -------- #
         if file.name.endswith(".csv"):
             signal = np.loadtxt(file, delimiter=",")
             if len(signal.shape) > 1:
@@ -154,12 +148,11 @@ if user and password:
             image = Image.open(file).convert("L")
             signal = np.array(image).flatten()
 
-        # Normalize
         signal = (signal - np.mean(signal)) / np.std(signal)
 
         data = torch.tensor(signal[:200]).float().unsqueeze(0).unsqueeze(0)
 
-        # -------- PREDICTION -------- #
+        # -------- PREDICT -------- #
         with torch.no_grad():
             output = model(data)
             pred = torch.argmax(output).item()
@@ -167,36 +160,51 @@ if user and password:
 
         bpm = calculate_bpm(signal)
 
-        # -------- GRAD CAM -------- #
+        # -------- EXPLANATION -------- #
         heatmap = grad_cam(model, data)
+        abnormal = highlight_abnormal(heatmap[:200])
 
-        # -------- DISPLAY -------- #
+        # -------- GRAPH -------- #
         with col2:
-            st.markdown("### ECG Signal + AI Highlight")
+            st.markdown("### ECG with AI Highlight")
 
-            fig, ax = plt.subplots()
-            ax.plot(signal[:200], label="ECG")
-            ax.plot(heatmap * max(signal[:200]), color='red', label="AI Focus")
-            ax.legend()
+            fig, ax = plt.subplots(figsize=(10,4))
+            ax.plot(signal[:200], color='cyan', linewidth=2)
+
+            for i in range(len(abnormal)):
+                if abnormal[i]:
+                    ax.axvspan(i, i+1, color='green', alpha=0.3)
+
             st.pyplot(fig)
 
-            st.markdown("### Diagnosis")
+            # -------- RESULTS -------- #
             diagnosis = labels.get(str(pred), "Unknown")
-            st.success(diagnosis)
 
-            st.markdown("### Metrics")
+            st.success(f"Diagnosis: {diagnosis}")
+
             c1, c2, c3 = st.columns(3)
             c1.metric("BPM", bpm)
             c2.metric("SpO2", f"{spo2}%")
             c3.metric("Confidence", f"{confidence:.2f}")
 
+            # -------- CLINICAL SUMMARY -------- #
+            st.markdown("### Clinical Summary")
+            st.info(f"""
+            Diagnosis: {diagnosis}  
+            Rhythm: {"Irregular" if bpm < 60 or bpm > 100 else "Normal Sinus"}  
+            AI Confidence: {confidence:.2f}  
+            """)
+
+            # -------- AI EXPLANATION -------- #
+            st.markdown("### AI Explanation")
+            st.info("""
+            Green regions indicate abnormal ECG segments detected by AI.
+            """)
+
             # -------- PDF -------- #
-            pdf_path = generate_pdf(name, age, diagnosis, bpm)
-
-            with open(pdf_path, "rb") as f:
-                st.download_button("Download Medical Report", f, file_name="report.pdf")
-
-            st.success("Analysis Complete")
+            pdf = generate_pdf(name, age, diagnosis, bpm)
+            with open(pdf, "rb") as f:
+                st.download_button("Download Report", f, file_name="ECG_Report.pdf")
 
 else:
-    st.warning("Login to continue")
+    st.warning("Login required")
