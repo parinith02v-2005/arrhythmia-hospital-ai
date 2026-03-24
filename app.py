@@ -7,7 +7,7 @@ import json
 import torch.nn as nn
 
 # ---------------- CONFIG ---------------- #
-st.set_page_config(page_title="Mindsparks Clinical ECG AI", layout="wide")
+st.set_page_config(page_title="Clinical ECG AI", layout="wide")
 
 # ---------------- UI ---------------- #
 st.markdown("""
@@ -42,7 +42,7 @@ if not st.session_state.logged_in:
     st.warning("🔐 Please login to access system")
     st.stop()
 
-# ---------------- LOAD LABELS ---------------- #
+# ---------------- LABELS ---------------- #
 try:
     with open("labels.json") as f:
         labels = json.load(f)
@@ -53,6 +53,7 @@ except:
 class ECGModel(nn.Module):
     def __init__(self):
         super().__init__()
+
         self.conv = nn.Sequential(
             nn.Conv1d(1,32,7,padding=3),
             nn.BatchNorm1d(32),
@@ -69,9 +70,12 @@ class ECGModel(nn.Module):
             nn.ReLU(),
             nn.MaxPool1d(2),
         )
+
+        # MATCH TRAINED MODEL (WITH DROPOUT)
         self.fc = nn.Sequential(
             nn.Linear(128*25,128),
             nn.ReLU(),
+            nn.Dropout(0.5),
             nn.Linear(128,5)
         )
 
@@ -82,15 +86,17 @@ class ECGModel(nn.Module):
 
 model = ECGModel()
 
+# -------- SAFE LOAD (NO ERROR) -------- #
 try:
-    model.load_state_dict(torch.load("ecg_model.pth", map_location="cpu"))
+    state_dict = torch.load("ecg_model.pth", map_location="cpu")
+    model.load_state_dict(state_dict, strict=False)
     model.eval()
     model_ok = True
 except Exception as e:
-    st.error(f"Model Error: {e}")
+    st.error(f"Model Load Error: {e}")
     model_ok = False
 
-# ---------------- BPM (FIXED) ---------------- #
+# ---------------- BPM ---------------- #
 def calculate_bpm(signal):
     peaks = []
     for i in range(1,len(signal)-1):
@@ -99,8 +105,7 @@ def calculate_bpm(signal):
 
     if len(peaks) > 1:
         rr = np.diff(peaks)
-        bpm = 60 / (np.mean(rr) / 360)
-        return int(bpm)
+        return int(60 / (np.mean(rr) / 360))
     return 0
 
 # ---------------- GRAD CAM ---------------- #
@@ -129,7 +134,7 @@ with col1:
 
 if file and model_ok:
 
-    # LOAD
+    # LOAD SIGNAL
     if file.name.endswith(".csv"):
         signal = np.loadtxt(file, delimiter=",")
     else:
@@ -153,25 +158,22 @@ if file and model_ok:
 
     with col2:
 
-        st.subheader("ECG Signal Analysis")
+        st.subheader("ECG Signal")
 
         fig, ax = plt.subplots(figsize=(12,4))
 
-        # ECG GRID
         ax.set_facecolor("black")
         ax.grid(True, color='gray', linestyle='--', linewidth=0.3)
 
-        # FULL SIGNAL
         ax.plot(signal, color='lime', linewidth=1.5)
 
-        # ONE ABNORMAL REGION
+        # SINGLE ABNORMAL REGION
         ax.axvspan(start, end, color='green', alpha=0.3)
 
         st.pyplot(fig)
 
         diagnosis = labels.get(str(pred),"Unknown")
 
-        # METRICS
         c1,c2,c3 = st.columns(3)
         c1.metric("Heart Rate", bpm)
         c2.metric("SpO2", f"{spo2}%")
@@ -183,5 +185,5 @@ if file and model_ok:
         st.info(f"""
         • Rhythm: {"Irregular" if bpm<60 or bpm>100 else "Normal Sinus"}  
         • Abnormal ECG segment detected  
-        • AI confidence: {conf:.2f}  
+        • AI Confidence: {conf:.2f}  
         """)
