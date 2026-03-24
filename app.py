@@ -7,20 +7,20 @@ import json
 import torch.nn as nn
 
 # -------- CONFIG -------- #
-st.set_page_config(page_title="Mindsparks ECG Clinical AI", layout="wide")
+st.set_page_config(page_title="Clinical ECG AI", layout="wide")
 
-# -------- UI -------- #
+# -------- CLEAN UI -------- #
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"] {
-    background: #0b1f2a;
+    background:#0b1f2a;
 }
-h1 {color:#00e6e6;}
-.block-container {padding:2rem;}
+h1,h2 {color:#00e6e6;}
+.metric {font-size:22px;}
 </style>
 """, unsafe_allow_html=True)
 
-# -------- LABELS -------- #
+# -------- LOAD LABELS -------- #
 try:
     with open("labels.json") as f:
         labels = json.load(f)
@@ -36,12 +36,10 @@ class ECGModel(nn.Module):
             nn.BatchNorm1d(32),
             nn.ReLU(),
             nn.MaxPool1d(2),
-
             nn.Conv1d(32,64,5,padding=2),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.MaxPool1d(2),
-
             nn.Conv1d(64,128,3,padding=1),
             nn.BatchNorm1d(128),
             nn.ReLU(),
@@ -50,7 +48,6 @@ class ECGModel(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(128*25,128),
             nn.ReLU(),
-            nn.Dropout(0.5),
             nn.Linear(128,5)
         )
 
@@ -64,52 +61,45 @@ model = ECGModel()
 try:
     model.load_state_dict(torch.load("ecg_model.pth", map_location="cpu"))
     model.eval()
-    ok = True
+    ok=True
 except:
-    ok = False
+    ok=False
 
-# -------- BPM -------- #
+# -------- BPM FIX -------- #
 def calculate_bpm(signal):
-    peaks = np.where(signal > np.mean(signal))[0]
+    peaks = []
+    for i in range(1,len(signal)-1):
+        if signal[i]>signal[i-1] and signal[i]>signal[i+1] and signal[i]>0.5:
+            peaks.append(i)
+
     if len(peaks)>1:
-        return int(60/(np.mean(np.diff(peaks))/360))
+        rr = np.diff(peaks)
+        return int(60/(np.mean(rr)/360))
     return 0
 
-# -------- GRAD CAM -------- #
-def grad_cam(model, x):
+# -------- HEATMAP -------- #
+def grad_cam(model,x):
     x.requires_grad=True
-    out = model(x)
-    cls = out.argmax()
+    out=model(x)
+    cls=out.argmax()
     out[0,cls].backward()
     return x.grad[0][0].abs().detach().numpy()
 
-# -------- SINGLE REGION -------- #
-def get_main_region(heatmap):
+# -------- MAIN REGION -------- #
+def get_region(heatmap, window=40):
     idx = np.argmax(heatmap)
-    start = max(0, idx-10)
-    end = min(len(heatmap), idx+10)
-    return start, end
-
-# -------- ECG PEAK DETECTION -------- #
-def detect_peaks(signal):
-    peaks = np.where(signal > np.mean(signal))[0]
-    if len(peaks)==0:
-        return None,None,None
-    r = peaks[np.argmax(signal[peaks])]
-    q = r-5 if r-5>0 else r
-    t = r+5 if r+5<len(signal) else r
-    return q,r,t
+    return max(0,idx-window), min(len(heatmap),idx+window)
 
 # -------- LOGIN -------- #
 st.sidebar.title("🏥 Doctor Login")
-user = st.sidebar.text_input("ID")
-pwd = st.sidebar.text_input("Password", type="password")
+user=st.sidebar.text_input("ID")
+pwd=st.sidebar.text_input("Password", type="password")
 
 if user and pwd and ok:
 
-    st.title("🫀 Mindsparks Clinical ECG AI")
+    st.title("🫀 Clinical ECG AI Dashboard")
 
-    col1, col2 = st.columns([1,2])
+    col1,col2 = st.columns([1,2])
 
     with col1:
         name = st.text_input("Patient Name")
@@ -119,7 +109,7 @@ if user and pwd and ok:
 
     if file:
 
-        # LOAD
+        # LOAD SIGNAL
         if file.name.endswith(".csv"):
             signal = np.loadtxt(file, delimiter=",")
         else:
@@ -137,55 +127,43 @@ if user and pwd and ok:
 
         bpm = calculate_bpm(signal)
 
-        # GRAD CAM
         heatmap = grad_cam(model,x)
-        start,end = get_main_region(heatmap)
+        start,end = get_region(heatmap)
 
-        # PEAKS
-        q,r,t = detect_peaks(signal)
-
-        # GRAPH
+        # -------- GRAPH -------- #
         with col2:
-            st.subheader("ECG Analysis")
 
-            fig, ax = plt.subplots(figsize=(10,4))
+            st.subheader("Full ECG Signal")
 
-            ax.plot(signal[:200], color='cyan')
+            fig, ax = plt.subplots(figsize=(12,4))
 
-            # SINGLE GREEN REGION
-            ax.axvspan(start,end,color='green',alpha=0.4,label="Abnormal Region")
+            # ECG GRID
+            ax.set_facecolor("black")
+            ax.grid(True, color='gray', linestyle='--', linewidth=0.3)
 
-            # PQRST MARKERS
-            if r:
-                ax.scatter(r, signal[r], color='red')
-                ax.text(r, signal[r], 'R', color='red')
+            ax.plot(signal, color='lime', linewidth=1.5)
 
-            if q:
-                ax.scatter(q, signal[q], color='yellow')
-                ax.text(q, signal[q], 'Q')
+            # SINGLE REGION
+            ax.axvspan(start, end, color='green', alpha=0.3)
 
-            if t:
-                ax.scatter(t, signal[t], color='white')
-                ax.text(t, signal[t], 'T')
-
-            ax.legend()
             st.pyplot(fig)
 
             diagnosis = labels.get(str(pred),"Unknown")
 
-            st.success(f"Diagnosis: {diagnosis}")
-
+            # -------- CLEAN METRICS -------- #
             c1,c2,c3 = st.columns(3)
-            c1.metric("BPM", bpm)
+            c1.metric("Heart Rate (BPM)", bpm)
             c2.metric("SpO2", f"{spo2}%")
             c3.metric("Confidence", f"{conf:.2f}")
 
-            st.markdown("### Clinical Interpretation")
+            st.success(f"Diagnosis: {diagnosis}")
+
+            st.markdown("### Clinical Summary")
             st.info(f"""
-            • Rhythm: {"Irregular" if bpm<60 or bpm>100 else "Normal Sinus"}  
-            • Abnormal segment localized  
-            • QRS complex analyzed  
+            Rhythm: {"Irregular" if bpm<60 or bpm>100 else "Normal"}  
+            Abnormal segment localized using AI  
+            Model confidence: {conf:.2f}  
             """)
 
 else:
-    st.warning("Login required or model not loaded")
+    st.warning("Login required")
